@@ -56,3 +56,10 @@ First shippable v0 vertical slice.
 - Tool errors recorded as `result_status=error` (not forged success)
 - MCP middleware observes tool return/throw
 - `scripts/phase6_boundary.sh` + `docs/EXECUTION_BOUNDARY.md`
+
+## 0.1.6 — 2026-09-29
+
+### Evidence bundle v0.2 + TS keygen
+- Bundle includes authorization, policy rules, approval, chain tip, agent metadata
+- Offline verifier prints evidence summary
+- TypeScript: client-side Ed25519 keygen + register public key (default path)
