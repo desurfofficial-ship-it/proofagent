@@ -3,8 +3,11 @@ services:
     build: .
     ports:
       - "8080:8080"
+    volumes:
+      - apidata:/data
     environment:
       - PROOFAGENT_ENV=dev
+      - PROOFAGENT_DATA=/data
     # Postgres ready for later swap (API still in-memory in v0 slice)
     depends_on:
       - db
@@ -25,4 +28,5 @@ services:
       retries: 5
 
 volumes:
+  apidata:
   pgdata:

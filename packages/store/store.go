@@ -310,3 +310,5 @@ func MustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+func (s *Memory) Backend() string { return "memory" }

@@ -32,7 +32,7 @@ func nonce() string {
 	return hex.EncodeToString(b)
 }
 
-func bearerOrg(r *http.Request, s *store.Memory) (string, bool) {
+func bearerOrg(r *http.Request, s store.Store) (string, bool) {
 	h := r.Header.Get("Authorization")
 	if strings.HasPrefix(h, "Bearer ") {
 		return s.OrgFromAPIKey(strings.TrimPrefix(h, "Bearer "))
@@ -48,7 +48,19 @@ func bearerOrg(r *http.Request, s *store.Memory) (string, bool) {
 }
 
 func main() {
-	s := store.NewMemory()
+	var s store.Store
+	dataDir := os.Getenv("PROOFAGENT_DATA")
+	if dataDir != "" {
+		fs, err := store.OpenFile(dataDir)
+		if err != nil {
+			log.Fatalf("open data dir %s: %v", dataDir, err)
+		}
+		s = fs
+		log.Printf("durable store: %s", s.Backend())
+	} else {
+		s = store.NewMemory()
+		log.Printf("store: memory (set PROOFAGENT_DATA=/path for durability)")
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
@@ -74,11 +86,7 @@ func main() {
 	})
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		storeName := "memory"
-	if os.Getenv("DATABASE_URL") != "" {
-		storeName = "memory+postgres_configured"
-	}
-	writeJSON(w, 200, map[string]string{"status": "ok", "store": storeName})
+		writeJSON(w, 200, map[string]string{"status": "ok", "store": s.Backend()})
 	})
 
 	// --- Organizations ---
@@ -539,6 +547,6 @@ mux.HandleFunc("POST /v1/verify", func(w http.ResponseWriter, r *http.Request) {
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
-	log.Printf("ProofAgent API listening on %s (store=memory)", addr)
+	log.Printf("ProofAgent API listening on %s (store=%s)", addr, s.Backend())
 	log.Fatal(http.ListenAndServe(addr, mux))
 }
