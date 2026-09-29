@@ -30,3 +30,10 @@ First shippable v0 vertical slice.
 - Full zero-trust MCP gateway
 - Production Postgres dual-write (schema ready)
 - Multi-region / Kafka
+
+## 0.1.3 — 2026-09-29
+
+### Phase 3 — Independent verification
+- `cmd/proofagent-verify` offline CLI (no API required)
+- `GET /v1/receipts/{id}/bundle` evidence export for Company B
+- `scripts/phase3_company_ab.sh` adversarial demo: valid + tamper

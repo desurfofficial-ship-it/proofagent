@@ -494,7 +494,29 @@ func main() {
 		writeJSON(w, 200, rec)
 	})
 
-mux.HandleFunc("POST /v1/verify", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("GET /v1/receipts/{id}/bundle", func(w http.ResponseWriter, r *http.Request) {
+		rec, ok := s.GetReceipt(r.PathValue("id"))
+		if !ok {
+			writeJSON(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		agentID, _ := rec.Agent["id"].(string)
+		k, ok := s.GetActiveKey(agentID)
+		if !ok {
+			writeJSON(w, 400, map[string]string{"error": "no_key"})
+			return
+		}
+		bundle := map[string]any{
+			"bundle_version": "0.1",
+			"receipt":        rec,
+			"public_key":     k.PublicKey,
+			"algorithm":      "Ed25519",
+			"note":           "Company B can verify offline with proofagent-verify -bundle this.json — no API required",
+		}
+		writeJSON(w, 200, bundle)
+	})
+
+	mux.HandleFunc("POST /v1/verify", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ReceiptID string            `json:"receipt_id"`
 			Receipt   *receipts.Receipt `json:"receipt"`

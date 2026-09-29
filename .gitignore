@@ -43,3 +43,4 @@ Thumbs.db
 data/
 sdk/python/*.egg-info/
 sdk/python/proofagent.egg-info/
+bin/

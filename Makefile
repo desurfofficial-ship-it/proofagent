@@ -23,3 +23,9 @@ e2e:
 
 release-check: test build
 	@echo "v0.1.0 release check OK"
+
+verify-cli:
+	go build -o bin/proofagent-verify ./cmd/proofagent-verify
+
+phase3: verify-cli
+	./scripts/phase3_company_ab.sh
