@@ -1,9 +1,18 @@
 # ProofAgent MCP Middleware
 
-Lightweight middleware that wraps an existing MCP server:
+```js
+import { ProofMCP } from "./src/index.js";
 
-```
-Agent → ProofAgent MCP Middleware → identify / authorize / approval / execute / receipt → underlying MCP Server
+const mcp = new ProofMCP({
+  agentId: "agt_...",
+  autoApprove: true, // dev only
+  tools: {
+    "stripe.create_payment": async (ctx) => ({ status: "success", amount: ctx.amount }),
+  },
+});
+
+const out = await mcp.call("stripe.create_payment", { amount: 25 });
+// out.verification.valid === true
 ```
 
-v0 is middleware only. Full zero-trust gateway is post-v0.
+Flow: **identify → authorize → approval → execute → receipt → verify**

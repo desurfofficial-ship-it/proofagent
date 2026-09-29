@@ -1,0 +1,8 @@
+{
+  "name": "@proofagent/mcp-middleware",
+  "version": "0.1.0",
+  "description": "ProofAgent MCP middleware — authorize → execute → receipt",
+  "main": "src/index.js",
+  "type": "module",
+  "engines": { "node": ">=18" }
+}
