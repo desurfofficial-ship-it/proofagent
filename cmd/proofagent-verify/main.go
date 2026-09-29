@@ -1,8 +1,3 @@
-// proofagent-verify: offline independent receipt verification.
-// Company B does NOT need Company A's API or dashboard.
-//
-//	proofagent-verify -receipt receipt.json -pubkey KEY_B64
-//	proofagent-verify -bundle bundle.json
 package main
 
 import (
@@ -19,34 +14,30 @@ import (
 func main() {
 	receiptPath := flag.String("receipt", "", "path to receipt JSON")
 	pubkey := flag.String("pubkey", "", "base64 Ed25519 public key")
-	bundlePath := flag.String("bundle", "", "path to evidence bundle (receipt + public_key)")
-	expectPrev := flag.String("prev", "", "expected previous_receipt_hash (optional; defaults to receipt field)")
+	bundlePath := flag.String("bundle", "", "path to evidence bundle v0.1/v0.2")
+	expectPrev := flag.String("prev", "", "expected previous_receipt_hash (optional)")
 	flag.Parse()
 
 	var rec receipts.Receipt
 	var pubB64 string
+	var meta map[string]any
 
 	if *bundlePath != "" {
 		b, err := os.ReadFile(*bundlePath)
 		if err != nil {
 			fail(err)
 		}
-		var bundle struct {
-			Receipt   receipts.Receipt `json:"receipt"`
-			PublicKey string           `json:"public_key"`
-			Passport  map[string]any   `json:"passport,omitempty"`
-		}
+		var bundle map[string]any
 		if err := json.Unmarshal(b, &bundle); err != nil {
 			fail(err)
 		}
-		rec = bundle.Receipt
-		pubB64 = bundle.PublicKey
-		if pubB64 == "" && bundle.Passport != nil {
-			if pk, ok := bundle.Passport["public_key"].(map[string]any); ok {
-				if k, ok := pk["key"].(string); ok {
-					pubB64 = k
-				}
-			}
+		meta = bundle
+		rb, _ := json.Marshal(bundle["receipt"])
+		if err := json.Unmarshal(rb, &rec); err != nil {
+			fail(err)
+		}
+		if pk, ok := bundle["public_key"].(string); ok {
+			pubB64 = pk
 		}
 	} else {
 		if *receiptPath == "" || *pubkey == "" {
@@ -76,14 +67,37 @@ func main() {
 	vr := receipts.Verify(&rec, pub, prev)
 
 	out := map[string]any{
-		"valid":  vr.Valid,
-		"checks": vr.Checks,
+		"valid":      vr.Valid,
+		"checks":     vr.Checks,
 		"receipt_id": rec.ReceiptID,
 		"agent_id":   rec.Agent["id"],
 		"mode":       "offline_independent",
 	}
 	if !vr.Valid {
 		out["error"] = vr.Error
+	}
+	// Evidence summary from bundle v0.2
+	if meta != nil {
+		summary := map[string]any{}
+		if v, ok := meta["bundle_version"]; ok {
+			summary["bundle_version"] = v
+		}
+		if v, ok := meta["authorization"]; ok {
+			summary["authorization"] = v
+		}
+		if v, ok := meta["policy"]; ok {
+			summary["policy"] = v
+		}
+		if v, ok := meta["approval"]; ok {
+			summary["approval"] = v
+		}
+		if v, ok := meta["chain"]; ok {
+			summary["chain"] = v
+		}
+		if v, ok := meta["agent"]; ok {
+			summary["agent"] = v
+		}
+		out["evidence"] = summary
 	}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")

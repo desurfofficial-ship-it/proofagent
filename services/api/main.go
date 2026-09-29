@@ -600,12 +600,56 @@ mux.HandleFunc("GET /v1/receipts/{id}/bundle", func(w http.ResponseWriter, r *ht
 			writeJSON(w, 400, map[string]string{"error": "no_key"})
 			return
 		}
+		agent, _ := s.GetAgent(agentID)
+		var authEvidence any
+		var policyEvidence any
+		if aid, ok := rec.Authorization["authorization_id"].(string); ok {
+			if a, ok := s.GetAuth(aid); ok {
+				authEvidence = map[string]any{
+					"authorization_id": a.AuthorizationID,
+					"decision":         a.Decision,
+					"status":           a.Status,
+					"policy_id":        a.PolicyID,
+					"policy_version":   a.PolicyVersion,
+					"issued_at":        a.IssuedAt,
+					"expires_at":       a.ExpiresAt,
+				}
+				if pol, ok := s.GetPolicy(a.PolicyID); ok {
+					policyEvidence = map[string]any{
+						"policy_id": pol.PolicyID,
+						"version":   pol.Version,
+						"rules":     pol.Rules,
+					}
+				}
+			}
+		}
+		if policyEvidence == nil && rec.Policy != nil {
+			policyEvidence = rec.Policy
+		}
+		orgID, status := "", ""
+		if agent != nil {
+			orgID = agent.OrganizationID
+			status = agent.Status
+		}
 		bundle := map[string]any{
-			"bundle_version": "0.1",
+			"bundle_version": "0.2",
 			"receipt":        rec,
 			"public_key":     k.PublicKey,
 			"algorithm":      "Ed25519",
-			"note":           "Company B can verify offline with proofagent-verify -bundle this.json — no API required",
+			"agent": map[string]any{
+				"agent_id":        agentID,
+				"organization_id": orgID,
+				"status":          status,
+			},
+			"authorization": authEvidence,
+			"policy":        policyEvidence,
+			"approval":      rec.Approval,
+			"chain": map[string]any{
+				"sequence":              rec.Sequence,
+				"previous_receipt_hash": rec.PreviousReceiptHash,
+				"receipt_hash":          rec.ReceiptHash,
+			},
+			"note": "Offline verify: proofagent-verify -bundle this.json",
 		}
 		writeJSON(w, 200, bundle)
 	})
