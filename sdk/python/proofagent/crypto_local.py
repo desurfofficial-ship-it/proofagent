@@ -29,10 +29,19 @@ def _canonical(obj: Any) -> bytes:
 def hash_object(obj: Any) -> str:
     return "sha256:" + hashlib.sha256(_canonical(obj)).hexdigest()
 
+def _private_key_from_b64(private_key_b64: str):
+    """Accept 32-byte seed or Go-style 64-byte PrivateKey (seed||pub)."""
+    raw = base64.b64decode(private_key_b64)
+    if len(raw) == 64:
+        raw = raw[:32]
+    if len(raw) != 32:
+        raise ValueError(f"Ed25519 private key must be 32 or 64 bytes, got {len(raw)}")
+    return Ed25519PrivateKey.from_private_bytes(raw)
+
 def sign_receipt_hash(private_key_b64: str, receipt_hash: str) -> str:
     if not _HAS_CRYPTO:
         raise RuntimeError("cryptography required for local signing")
-    sk = Ed25519PrivateKey.from_private_bytes(base64.b64decode(private_key_b64))
+    sk = _private_key_from_b64(private_key_b64)
     return base64.b64encode(sk.sign(receipt_hash.encode("utf-8"))).decode()
 
 def verify_receipt_hash(public_key_b64: str, receipt_hash: str, signature_b64: str) -> bool:

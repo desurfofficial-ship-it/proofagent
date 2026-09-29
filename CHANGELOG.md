@@ -47,3 +47,12 @@ First shippable v0 vertical slice.
 - File store never persists demo private keys
 - `scripts/adversarial.sh` cross-tenant tests
 - CI runs e2e + adversarial
+
+## 0.1.5 — 2026-09-29
+
+### Phase 6 — Execution boundary
+- `ToolBoundary`: authorize → invoke tool → observe result → hash → receipt
+- DENY prevents tool invocation
+- Tool errors recorded as `result_status=error` (not forged success)
+- MCP middleware observes tool return/throw
+- `scripts/phase6_boundary.sh` + `docs/EXECUTION_BOUNDARY.md`

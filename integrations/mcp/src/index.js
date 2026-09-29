@@ -1,11 +1,6 @@
 /**
- * Lightweight MCP-style middleware wrapper.
- * Wraps tool handlers: authorize → (optional approval hook) → execute → submit receipt.
- *
- * Usage:
- *   import { ProofMCP } from "@proofagent/mcp-middleware";
- *   const server = new ProofMCP({ baseUrl, agentId, tools: { "stripe.create_payment": fn } });
- *   await server.call("stripe.create_payment", { amount: 25 });
+ * ProofAgent MCP middleware — authorize → execute tool → observed receipt.
+ * Result status comes from the tool return/throw, not from the caller.
  */
 
 export class ProofMCP {
@@ -33,6 +28,12 @@ export class ProofMCP {
   }
 
   async call(tool, context = {}) {
+    if (typeof this.tools[tool] !== "function") {
+      const err = new Error(`tool_not_registered: ${tool}`);
+      err.status = 400;
+      throw err;
+    }
+
     const auth = await this.#req("POST", "/v1/authorize", {
       agent_id: this.agentId,
       action: { type: "tool_call", tool },
@@ -58,19 +59,26 @@ export class ProofMCP {
       });
     }
 
-    // Execute underlying tool if registered
-    let result = { status: "success" };
-    if (typeof this.tools[tool] === "function") {
-      result = (await this.tools[tool](context)) || result;
+    // Observed execution
+    let resultStatus = "success";
+    let result;
+    try {
+      result = await this.tools[tool](context);
+    } catch (e) {
+      resultStatus = "error";
+      result = { error: String(e && e.message ? e.message : e) };
     }
+
+    const inputHash = "sha256:mcp_input";
+    const resultHash = "sha256:mcp_result";
 
     const receipt = await this.#req("POST", "/v1/receipts", {
       agent_id: this.agentId,
       authorization_id: authorizationId,
       action: { type: "tool_call", tool },
-      input_hash: "sha256:none",
-      result_status: result.status || "success",
-      result_hash: "sha256:none",
+      input_hash: inputHash,
+      result_status: resultStatus,
+      result_hash: resultHash,
     });
 
     const verification = await this.#req("POST", "/v1/verify", {
@@ -80,9 +88,11 @@ export class ProofMCP {
     return {
       status: "completed",
       decision: auth.decision,
+      result_status: resultStatus,
       result,
       receipt,
       verification,
+      observation: { boundary: "proofagent.mcp" },
     };
   }
 }
