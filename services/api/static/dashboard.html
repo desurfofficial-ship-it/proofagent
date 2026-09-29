@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ProofAgent Dashboard</title>
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, sans-serif; color: #e8eaed; background: #0f1115; }
+    body { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; letter-spacing: 0.02em; }
+    .muted { color: #9aa0a6; font-size: 0.9rem; }
+    card, .card { display: block; background: #1a1d24; border: 1px solid #2a2f3a; border-radius: 10px; padding: 1rem 1.2rem; margin: 1rem 0; }
+    label { display: block; font-size: 0.75rem; color: #9aa0a6; margin-bottom: 0.25rem; }
+    input, select, button, textarea {
+      width: 100%; box-sizing: border-box; background: #0f1115; color: #e8eaed;
+      border: 1px solid #2a2f3a; border-radius: 6px; padding: 0.55rem 0.7rem; margin-bottom: 0.6rem;
+    }
+    button { cursor: pointer; background: #3b82f6; border-color: #3b82f6; font-weight: 600; }
+    button.secondary { background: transparent; border-color: #3b82f6; color: #93c5fd; }
+    pre { background: #0a0c10; padding: 0.8rem; border-radius: 8px; overflow: auto; font-size: 0.8rem; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+    .ok { color: #34d399; } .bad { color: #f87171; }
+  </style>
+</head>
+<body>
+  <h1>ProofAgent <span class="muted">v0 dashboard</span></h1>
+  <p class="muted">Authorize → (approve) → receipt → verify. API at <code id="base"></code></p>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Agent name</label>
+        <input id="name" value="DashboardBot" />
+      </div>
+      <div>
+        <label>Tool</label>
+        <input id="tool" value="stripe.create_payment" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label>Amount</label>
+        <input id="amount" type="number" value="75" />
+      </div>
+      <div>
+        <label>Auto-approve REQUIRE_APPROVAL</label>
+        <select id="approve"><option value="1">Yes</option><option value="0">No</option></select>
+      </div>
+    </div>
+    <button id="run">Run prove-it flow</button>
+    <button class="secondary" id="health">Health check</button>
+  </div>
+
+  <div class="card">
+    <label>Output</label>
+    <pre id="out">Ready.</pre>
+  </div>
+
+<script>
+const base = location.origin;
+document.getElementById('base').textContent = base;
+const out = document.getElementById('out');
+function log(x) { out.textContent = typeof x === 'string' ? x : JSON.stringify(x, null, 2); }
+
+document.getElementById('health').onclick = async () => {
+  log(await (await fetch(base + '/health')).json());
+};
+
+document.getElementById('run').onclick = async () => {
+  try {
+    const name = document.getElementById('name').value;
+    const tool = document.getElementById('tool').value;
+    const amount = Number(document.getElementById('amount').value);
+    const approve = document.getElementById('approve').value === '1';
+
+    const agent = await (await fetch(base + '/v1/agents', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, principal_id: 'usr_dashboard' })
+    })).json();
+    await fetch(base + '/v1/agents/' + agent.agent_id + '/demo-keypair', { method: 'POST' });
+
+    const auth = await (await fetch(base + '/v1/authorize', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ agent_id: agent.agent_id, action: { type: 'tool_call', tool }, context: { amount } })
+    })).json();
+
+    if (auth.decision === 'DENY') {
+      log({ step: 'authorize', ...auth, note: 'Blocked by policy' });
+      return;
+    }
+    let authId = auth.authorization_id;
+    if (auth.decision === 'REQUIRE_APPROVAL') {
+      if (!approve) { log({ step: 'awaiting_approval', ...auth }); return; }
+      await fetch(base + '/v1/approvals', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ authorization_id: authId, decision: 'approve' })
+      });
+    }
+
+    const receipt = await (await fetch(base + '/v1/receipts', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        agent_id: agent.agent_id, authorization_id: authId,
+        action: { type: 'tool_call', tool },
+        input_hash: 'sha256:dashboard', result_status: 'success', result_hash: 'sha256:dashboard'
+      })
+    })).json();
+
+    const verification = await (await fetch(base + '/v1/verify', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ receipt_id: receipt.receipt_id })
+    })).json();
+
+    log({ agent_id: agent.agent_id, decision: auth.decision, receipt_id: receipt.receipt_id, verification });
+  } catch (e) {
+    log(String(e));
+  }
+};
+</script>
+</body>
+</html>

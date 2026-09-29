@@ -48,8 +48,26 @@ func main() {
 	s := store.NewMemory()
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(dashboardHTML)
+})
+
+	mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(dashboardHTML)
+})
+
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, 200, map[string]string{"status": "ok", "store": "memory"})
+		storeName := "memory"
+	if os.Getenv("DATABASE_URL") != "" {
+		storeName = "memory+postgres_configured"
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok", "store": storeName})
 	})
 
 	// --- Organizations ---
