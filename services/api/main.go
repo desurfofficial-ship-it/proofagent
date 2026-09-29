@@ -160,6 +160,11 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/agents/{id}/demo-keypair", func(w http.ResponseWriter, r *http.Request) {
+		// DEMO ONLY — production agents must generate keys client-side and POST public key only.
+		if os.Getenv("PROOFAGENT_DEMO") == "0" {
+			writeJSON(w, 403, map[string]string{"error": "demo_keypair_disabled", "hint": "generate keypair client-side; POST /v1/agents/{id}/keys with public_key only"})
+			return
+		}
 		agentID := r.PathValue("id")
 		if _, ok := s.GetAgent(agentID); !ok {
 			writeJSON(w, 404, map[string]string{"error": "agent not found"})
@@ -380,30 +385,39 @@ func main() {
 			writeJSON(w, 403, map[string]string{"error": "agent_inactive"})
 			return
 		}
-		auth, ok := s.GetAuth(body.AuthorizationID)
+		authProbe, ok := s.GetAuth(body.AuthorizationID)
 		if !ok {
 			writeJSON(w, 404, map[string]string{"error": "authorization not found"})
 			return
 		}
-		if auth.AgentID != body.AgentID {
+		if authProbe.AgentID != body.AgentID {
 			writeJSON(w, 403, map[string]string{"error": "agent_mismatch"})
 			return
 		}
-		if auth.Status == "consumed" {
+		if authProbe.Status == "consumed" {
 			writeJSON(w, 409, map[string]string{"error": "REPLAY_DETECTED"})
 			return
 		}
-		if auth.Decision == policy.Deny || auth.Status == "denied" {
+		if authProbe.Decision == policy.Deny || authProbe.Status == "denied" {
 			writeJSON(w, 403, map[string]string{"error": "not_authorized"})
 			return
 		}
-		if auth.Decision == policy.RequireApproval && auth.Status != "approved" {
+		if authProbe.Decision == policy.RequireApproval && authProbe.Status != "approved" {
 			writeJSON(w, 403, map[string]string{"error": "approval_required"})
 			return
 		}
-		exp, _ := time.Parse(time.RFC3339, auth.ExpiresAt)
-		if time.Now().UTC().After(exp) {
-			writeJSON(w, 410, map[string]string{"error": "authorization_expired"})
+		// Atomic single-use consumption
+		auth, ok := s.ConsumeAuth(body.AuthorizationID, time.Now().UTC())
+		if !ok {
+			if auth != nil && auth.Status == "consumed" {
+				writeJSON(w, 409, map[string]string{"error": "REPLAY_DETECTED"})
+				return
+			}
+			if auth != nil && auth.Status == "expired" {
+				writeJSON(w, 410, map[string]string{"error": "authorization_expired"})
+				return
+			}
+			writeJSON(w, 409, map[string]string{"error": "REPLAY_DETECTED"})
 			return
 		}
 
@@ -459,7 +473,6 @@ func main() {
 			writeJSON(w, 400, map[string]any{"error": "invalid_receipt", "checks": vr.Checks})
 			return
 		}
-		_ = s.UpdateAuthStatus(auth.AuthorizationID, "consumed")
 		s.PutReceipt(body.AgentID, rec)
 		writeJSON(w, 201, rec)
 	})
@@ -473,10 +486,11 @@ func main() {
 		writeJSON(w, 200, rec)
 	})
 
-	mux.HandleFunc("POST /v1/verify", func(w http.ResponseWriter, r *http.Request) {
+mux.HandleFunc("POST /v1/verify", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			ReceiptID string            `json:"receipt_id"`
 			Receipt   *receipts.Receipt `json:"receipt"`
+			PublicKey string            `json:"public_key"` // base64 Ed25519 — enables independent verify
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "invalid json"})
@@ -490,18 +504,35 @@ func main() {
 			writeJSON(w, 404, map[string]string{"error": "receipt not found"})
 			return
 		}
-		agentID, _ := rec.Agent["id"].(string)
-		k, ok := s.GetActiveKey(agentID)
-		if !ok {
-			writeJSON(w, 400, map[string]string{"error": "no_key"})
-			return
+
+		var pub ed25519.PublicKey
+		var err error
+		if body.PublicKey != "" {
+			pub, err = crypto.PublicKeyFromBase64(body.PublicKey)
+			if err != nil {
+				writeJSON(w, 400, map[string]string{"error": "bad_public_key"})
+				return
+			}
+		} else {
+			agentID, _ := rec.Agent["id"].(string)
+			k, ok := s.GetActiveKey(agentID)
+			if !ok {
+				writeJSON(w, 400, map[string]string{"error": "no_key_provide_public_key"})
+				return
+			}
+			pub, err = crypto.PublicKeyFromBase64(k.PublicKey)
+			if err != nil {
+				writeJSON(w, 400, map[string]string{"error": "bad_key"})
+				return
+			}
 		}
-		pub, err := crypto.PublicKeyFromBase64(k.PublicKey)
-		if err != nil {
-			writeJSON(w, 400, map[string]string{"error": "bad_key"})
-			return
-		}
-		writeJSON(w, 200, receipts.Verify(rec, pub, rec.PreviousReceiptHash))
+		vr := receipts.Verify(rec, pub, rec.PreviousReceiptHash)
+		writeJSON(w, 200, map[string]any{
+			"valid":  vr.Valid,
+			"checks": vr.Checks,
+			"error":  vr.Error,
+			"mode":   map[string]bool{"independent_key": body.PublicKey != ""},
+		})
 	})
 
 	addr := ":8080"

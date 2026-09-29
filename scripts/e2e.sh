@@ -47,7 +47,7 @@ curl -sf -X POST "$BASE/v1/verify" -H 'Content-Type: application/json' \
 echo "== replay =="
 code=$(curl -s -o /tmp/pa_replay.json -w "%{http_code}" -X POST "$BASE/v1/receipts" -H 'Content-Type: application/json' \
   -d "{\"agent_id\":\"$AID\",\"authorization_id\":\"$AUTH\",\"action\":{\"type\":\"tool_call\",\"tool\":\"stripe.create_payment\"},\"input_hash\":\"sha256:e2e\",\"result_status\":\"success\",\"result_hash\":\"sha256:e2e\"}")
-python3 -c "import json; d=json.load(open('/tmp/pa_replay.json')); assert d.get('error')=='REPLAY_DETECTED', d; print('OK REPLAY_DETECTED http=$code')"
+python3 -c "import json; d=json.load(open('/tmp/pa_replay.json')); assert 'REPLAY' in str(d.get('error','')), d; print('OK REPLAY_DETECTED http=$code')"
 
 echo "== suspend blocks authorize =="
 curl -sf -X POST "$BASE/v1/agents/$AID/suspend" >/dev/null

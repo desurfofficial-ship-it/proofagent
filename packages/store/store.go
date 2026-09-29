@@ -225,6 +225,35 @@ func (s *Memory) GetReceipt(id string) (*receipts.Receipt, bool) {
 	return r, ok
 }
 
+
+// ConsumeAuth atomically transitions approved/pending → consumed.
+// Returns false if already consumed, denied, expired, or missing.
+func (s *Memory) ConsumeAuth(id string, now time.Time) (*schemas.Authorization, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	a, ok := s.auths[id]
+	if !ok {
+		return nil, false
+	}
+	if a.Status == "consumed" || a.Status == "denied" || a.Status == "expired" {
+		return a, false
+	}
+	if a.Status != "approved" && a.Status != "pending" {
+		return a, false
+	}
+	// REQUIRE_APPROVAL must be approved; ALLOW is auto-approved
+	if a.Decision == "REQUIRE_APPROVAL" && a.Status != "approved" {
+		return a, false
+	}
+	exp, err := time.Parse(time.RFC3339, a.ExpiresAt)
+	if err == nil && now.After(exp) {
+		a.Status = "expired"
+		return a, false
+	}
+	a.Status = "consumed"
+	return a, true
+}
+
 func (s *Memory) IssuePassport(agentID, keyID string, expiresAt time.Time) (map[string]any, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

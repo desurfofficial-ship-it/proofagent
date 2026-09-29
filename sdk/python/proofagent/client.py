@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from typing import Any, Optional
+import time
 
 import httpx
+
+from . import crypto_local
 
 
 class ProofAgentError(Exception):
@@ -13,8 +16,6 @@ class ProofAgentError(Exception):
 
 
 class Client:
-    """Low-level HTTP client for ProofAgent API."""
-
     def __init__(self, base_url: str = "http://localhost:8080", timeout: float = 30.0):
         self.base_url = base_url.rstrip("/")
         self._http = httpx.Client(base_url=self.base_url, timeout=timeout)
@@ -42,41 +43,24 @@ class Client:
             )
         return data
 
-    def create_agent(
-        self,
-        name: str = "",
-        principal_id: str = "",
-        organization_id: str = "",
-        policy_id: str = "",
-        **kwargs: Any,
-    ) -> dict:
+    def create_agent(self, name: str = "", principal_id: str = "", **kwargs: Any) -> dict:
         body = {"name": name, "principal_id": principal_id, **kwargs}
-        if organization_id:
-            body["organization_id"] = organization_id
-        if policy_id:
-            body["policy_id"] = policy_id
         return self._req("POST", "/v1/agents", body)
 
-    def get_agent(self, agent_id: str) -> dict:
-        return self._req("GET", f"/v1/agents/{agent_id}")
+    def register_public_key(self, agent_id: str, public_key_b64: str) -> dict:
+        return self._req("POST", f"/v1/agents/{agent_id}/keys", {"public_key": public_key_b64})
 
     def demo_keypair(self, agent_id: str) -> dict:
-        """Dev helper: server generates keypair and registers public key."""
+        """DEV ONLY — server holds private key. Prefer generate_keypair + register_public_key."""
         return self._req("POST", f"/v1/agents/{agent_id}/demo-keypair")
 
-    def authorize(
-        self,
-        agent_id: str,
-        tool: str,
-        context: Optional[dict] = None,
-        action_type: str = "tool_call",
-    ) -> dict:
+    def authorize(self, agent_id: str, tool: str, context: Optional[dict] = None) -> dict:
         return self._req(
             "POST",
             "/v1/authorize",
             {
                 "agent_id": agent_id,
-                "action": {"type": action_type, "tool": tool},
+                "action": {"type": "tool_call", "tool": tool},
                 "context": context or {},
             },
         )
@@ -88,31 +72,18 @@ class Client:
             {"authorization_id": authorization_id, "decision": decision},
         )
 
-    def submit_receipt(
-        self,
-        agent_id: str,
-        authorization_id: str,
-        tool: str,
-        input_hash: str = "sha256:none",
-        result_status: str = "success",
-        result_hash: str = "sha256:none",
-        action_type: str = "tool_call",
-    ) -> dict:
-        return self._req(
-            "POST",
-            "/v1/receipts",
-            {
-                "agent_id": agent_id,
-                "authorization_id": authorization_id,
-                "action": {"type": action_type, "tool": tool},
-                "input_hash": input_hash,
-                "result_status": result_status,
-                "result_hash": result_hash,
-            },
-        )
+    def submit_receipt(self, payload: dict) -> dict:
+        return self._req("POST", "/v1/receipts", payload)
 
-    def verify(self, receipt_id: str) -> dict:
-        return self._req("POST", "/v1/verify", {"receipt_id": receipt_id})
+    def verify(self, receipt_id: str | None = None, receipt: dict | None = None, public_key: str | None = None) -> dict:
+        body: dict[str, Any] = {}
+        if receipt_id:
+            body["receipt_id"] = receipt_id
+        if receipt:
+            body["receipt"] = receipt
+        if public_key:
+            body["public_key"] = public_key
+        return self._req("POST", "/v1/verify", body)
 
     def health(self) -> dict:
         return self._req("GET", "/health")
@@ -120,17 +91,23 @@ class Client:
 
 class Agent:
     """
-    High-level agent helper.
-
-    Typical flow:
-        agent = Agent.create(name="FinanceBot")
-        result = agent.execute("stripe.create_payment", {"amount": 75}, approve=True)
+    Production trust model:
+      local keygen → register public key only → authorize → sign receipt locally → submit → verify
     """
 
-    def __init__(self, client: Client, agent_id: str, private_key: str | None = None):
+    def __init__(
+        self,
+        client: Client,
+        agent_id: str,
+        public_key: str | None = None,
+        private_key: str | None = None,
+    ):
         self.client = client
         self.agent_id = agent_id
+        self.public_key = public_key
         self.private_key = private_key
+        self._seq = 0
+        self._prev_hash = crypto_local.GENESIS
 
     @classmethod
     def create(
@@ -138,15 +115,22 @@ class Agent:
         name: str = "agent",
         principal_id: str = "",
         base_url: str = "http://localhost:8080",
-        with_demo_key: bool = True,
+        *,
+        client_side_keys: bool = True,
+        with_demo_key: bool = False,
     ) -> "Agent":
         client = Client(base_url=base_url)
         a = client.create_agent(name=name, principal_id=principal_id)
-        priv = None
-        if with_demo_key:
-            kp = client.demo_keypair(a["agent_id"])
+        agent_id = a["agent_id"]
+        pub = priv = None
+        if client_side_keys and not with_demo_key:
+            pub, priv = crypto_local.generate_keypair()
+            client.register_public_key(agent_id, pub)
+        elif with_demo_key:
+            kp = client.demo_keypair(agent_id)
+            pub = kp["key"]["public_key"]
             priv = kp.get("private_key")
-        return cls(client, a["agent_id"], private_key=priv)
+        return cls(client, agent_id, public_key=pub, private_key=priv)
 
     def authorize(self, tool: str, context: Optional[dict] = None) -> dict:
         return self.client.authorize(self.agent_id, tool, context)
@@ -161,22 +145,12 @@ class Agent:
         result_status: str = "success",
         result_hash: str = "sha256:none",
     ) -> dict:
-        """
-        authorize → optional approval → submit receipt → verify.
-
-        Returns dict with decision, authorization, receipt, verification.
-        Raises ProofAgentError on DENY or failed steps.
-        """
         auth = self.authorize(tool, context)
         decision = auth.get("decision")
         out: dict[str, Any] = {"authorization": auth, "decision": decision}
 
         if decision == "DENY":
-            raise ProofAgentError(
-                f"DENIED: {auth.get('reason', 'policy')}",
-                status=403,
-                body=auth,
-            )
+            raise ProofAgentError(f"DENIED: {auth.get('reason', 'policy')}", status=403, body=auth)
 
         auth_id = auth["authorization_id"]
 
@@ -186,16 +160,54 @@ class Agent:
                 return out
             out["approval"] = self.client.approve(auth_id, "approve")
 
-        receipt = self.client.submit_receipt(
-            self.agent_id,
-            auth_id,
-            tool,
-            input_hash=input_hash,
-            result_status=result_status,
-            result_hash=result_hash,
-        )
+        # Client-side signed receipt when we own the private key
+        if self.private_key and self.public_key:
+            self._seq += 1
+            body = {
+                "receipt_version": "0.1",
+                "receipt_id": f"rcpt_local_{int(time.time()*1e9)}",
+                "sequence": self._seq,
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "principal": {"id": ""},
+                "agent": {"id": self.agent_id, "version": ""},
+                "authorization": {"authorization_id": auth_id, "decision": decision},
+                "action": {"type": "tool_call", "tool": tool},
+                "input": {"hash": input_hash},
+                "result": {"status": result_status, "hash": result_hash},
+                "previous_receipt_hash": self._prev_hash,
+            }
+            signed = crypto_local.build_signed_receipt(body, self.private_key)
+            receipt = self.client.submit_receipt(
+                {
+                    "agent_id": self.agent_id,
+                    "authorization_id": auth_id,
+                    "action": body["action"],
+                    "input_hash": input_hash,
+                    "result_status": result_status,
+                    "result_hash": result_hash,
+                    "receipt": signed,
+                }
+            )
+            self._prev_hash = signed["receipt_hash"]
+        else:
+            # Demo path: server signs
+            receipt = self.client.submit_receipt(
+                {
+                    "agent_id": self.agent_id,
+                    "authorization_id": auth_id,
+                    "action": {"type": "tool_call", "tool": tool},
+                    "input_hash": input_hash,
+                    "result_status": result_status,
+                    "result_hash": result_hash,
+                }
+            )
+
         out["receipt"] = receipt
-        verification = self.client.verify(receipt["receipt_id"])
+        # Independent verify with public key when available
+        verification = self.client.verify(
+            receipt_id=receipt.get("receipt_id"),
+            public_key=self.public_key,
+        )
         out["verification"] = verification
         out["status"] = "completed"
         return out
