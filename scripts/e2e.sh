@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export DEMO_MODE="${DEMO_MODE:-1}"
 BASE="${PROOFAGENT_URL:-http://localhost:8080}"
 
 echo "== health =="

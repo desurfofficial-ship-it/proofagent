@@ -122,10 +122,8 @@ func (f *File) snapshot() *fileSnapshot {
 	m := f.mem
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	// Never persist demo private keys to disk (trust boundary).
 	demo := map[string]string{}
-	for id, priv := range m.demoPriv {
-		demo[id] = base64.StdEncoding.EncodeToString(priv)
-	}
 	// shallow copy maps for marshal
 	return &fileSnapshot{
 		Orgs: m.orgs, APIKeyHash: m.apiKeyHash, Agents: m.agents, Keys: m.keys,

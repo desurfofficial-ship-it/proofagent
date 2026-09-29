@@ -37,3 +37,13 @@ First shippable v0 vertical slice.
 - `cmd/proofagent-verify` offline CLI (no API required)
 - `GET /v1/receipts/{id}/bundle` evidence export for Company B
 - `scripts/phase3_company_ab.sh` adversarial demo: valid + tamper
+
+## 0.1.4 — 2026-09-29
+
+### Phase 4 — Security hardening
+- Auth secure by default: require API key unless `DEMO_MODE=1`
+- Tenant isolation on agent get/lifecycle/keys/authorize/approvals/receipts
+- demo-keypair only when `DEMO_MODE=1`
+- File store never persists demo private keys
+- `scripts/adversarial.sh` cross-tenant tests
+- CI runs e2e + adversarial

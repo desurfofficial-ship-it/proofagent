@@ -32,6 +32,11 @@ func nonce() string {
 	return hex.EncodeToString(b)
 }
 
+func demoMode() bool {
+	v := strings.ToLower(os.Getenv("DEMO_MODE"))
+	return v == "1" || v == "true" || v == "yes"
+}
+
 func bearerOrg(r *http.Request, s store.Store) (string, bool) {
 	h := r.Header.Get("Authorization")
 	if strings.HasPrefix(h, "Bearer ") {
@@ -40,11 +45,24 @@ func bearerOrg(r *http.Request, s store.Store) (string, bool) {
 	if k := r.Header.Get("X-API-Key"); k != "" {
 		return s.OrgFromAPIKey(k)
 	}
-	// STRICT_AUTH=1 requires API key; otherwise demo mode uses org_default
-	if os.Getenv("STRICT_AUTH") == "1" || os.Getenv("STRICT_AUTH") == "true" {
-		return "", false
+	// Secure by default: unauthenticated only when DEMO_MODE=1
+	if demoMode() {
+		return "org_default", true
 	}
-	return "org_default", true
+	return "", false
+}
+
+// requireAgentOrg loads agent and checks tenant ownership.
+// orgID empty means skip (should not happen when auth required).
+func requireAgentOrg(s store.Store, agentID, orgID string) (*schemas.Agent, string) {
+	a, ok := s.GetAgent(agentID)
+	if !ok {
+		return nil, "not_found"
+	}
+	if a.OrganizationID != orgID {
+		return nil, "forbidden"
+	}
+	return a, ""
 }
 
 func main() {
@@ -135,15 +153,37 @@ func main() {
 	})
 
 	mux.HandleFunc("GET /v1/agents/{id}", func(w http.ResponseWriter, r *http.Request) {
-		a, ok := s.GetAgent(r.PathValue("id"))
+		orgID, ok := bearerOrg(r, s)
 		if !ok {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
+		a, errCode := requireAgentOrg(s, r.PathValue("id"), orgID)
+		if errCode == "not_found" {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
+			return
+		}
+		if errCode == "forbidden" {
+			writeJSON(w, 403, map[string]string{"error": "forbidden"})
 			return
 		}
 		writeJSON(w, 200, a)
 	})
 
 	mux.HandleFunc("POST /v1/agents/{id}/suspend", func(w http.ResponseWriter, r *http.Request) {
+		orgID, ok := bearerOrg(r, s)
+		if !ok {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
+		if _, errCode := requireAgentOrg(s, r.PathValue("id"), orgID); errCode != "" {
+			if errCode == "not_found" {
+				writeJSON(w, 404, map[string]string{"error": "not found"})
+			} else {
+				writeJSON(w, 403, map[string]string{"error": "forbidden"})
+			}
+			return
+		}
 		if err := s.SetAgentStatus(r.PathValue("id"), schemas.AgentStatusSuspended); err != nil {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
 			return
@@ -152,6 +192,19 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/agents/{id}/revoke", func(w http.ResponseWriter, r *http.Request) {
+		orgID, ok := bearerOrg(r, s)
+		if !ok {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
+		if _, errCode := requireAgentOrg(s, r.PathValue("id"), orgID); errCode != "" {
+			if errCode == "not_found" {
+				writeJSON(w, 404, map[string]string{"error": "not found"})
+			} else {
+				writeJSON(w, 403, map[string]string{"error": "forbidden"})
+			}
+			return
+		}
 		if err := s.SetAgentStatus(r.PathValue("id"), schemas.AgentStatusRevoked); err != nil {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
 			return
@@ -160,6 +213,19 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/agents/{id}/activate", func(w http.ResponseWriter, r *http.Request) {
+		orgID, ok := bearerOrg(r, s)
+		if !ok {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
+		if _, errCode := requireAgentOrg(s, r.PathValue("id"), orgID); errCode != "" {
+			if errCode == "not_found" {
+				writeJSON(w, 404, map[string]string{"error": "not found"})
+			} else {
+				writeJSON(w, 403, map[string]string{"error": "forbidden"})
+			}
+			return
+		}
 		if err := s.SetAgentStatus(r.PathValue("id"), schemas.AgentStatusActive); err != nil {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
 			return
@@ -168,13 +234,17 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/agents/{id}/demo-keypair", func(w http.ResponseWriter, r *http.Request) {
-		// DEMO ONLY — production agents must generate keys client-side and POST public key only.
-		if os.Getenv("PROOFAGENT_DEMO") == "0" {
-			writeJSON(w, 403, map[string]string{"error": "demo_keypair_disabled", "hint": "generate keypair client-side; POST /v1/agents/{id}/keys with public_key only"})
+		if !demoMode() {
+			writeJSON(w, 403, map[string]string{"error": "demo_keypair_disabled", "hint": "set DEMO_MODE=1 for demos only; production: client-side keys"})
+			return
+		}
+		orgID, ok := bearerOrg(r, s)
+		if !ok {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
 			return
 		}
 		agentID := r.PathValue("id")
-		if _, ok := s.GetAgent(agentID); !ok {
+		if _, errCode := requireAgentOrg(s, agentID, orgID); errCode != "" {
 			writeJSON(w, 404, map[string]string{"error": "agent not found"})
 			return
 		}
@@ -198,8 +268,13 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/agents/{id}/keys", func(w http.ResponseWriter, r *http.Request) {
+		orgID, ok := bearerOrg(r, s)
+		if !ok {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
 		agentID := r.PathValue("id")
-		if _, ok := s.GetAgent(agentID); !ok {
+		if _, errCode := requireAgentOrg(s, agentID, orgID); errCode != "" {
 			writeJSON(w, 404, map[string]string{"error": "agent not found"})
 			return
 		}
@@ -292,6 +367,11 @@ func main() {
 
 	// --- Authorize ---
 	mux.HandleFunc("POST /v1/authorize", func(w http.ResponseWriter, r *http.Request) {
+		orgID, ok := bearerOrg(r, s)
+		if !ok {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
 		var body struct {
 			AgentID string         `json:"agent_id"`
 			Action  map[string]any `json:"action"`
@@ -301,8 +381,8 @@ func main() {
 			writeJSON(w, 400, map[string]string{"error": "invalid json"})
 			return
 		}
-		agent, ok := s.GetAgent(body.AgentID)
-		if !ok || agent.Status != schemas.AgentStatusActive {
+		agent, errCode := requireAgentOrg(s, body.AgentID, orgID)
+		if errCode != "" || agent.Status != schemas.AgentStatusActive {
 			writeJSON(w, 403, map[string]any{"decision": policy.Deny, "error": "agent_inactive_or_missing"})
 			return
 		}
@@ -339,6 +419,11 @@ func main() {
 	})
 
 	mux.HandleFunc("POST /v1/approvals", func(w http.ResponseWriter, r *http.Request) {
+		orgID, ok := bearerOrg(r, s)
+		if !ok {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
 		var body struct {
 			AuthorizationID string `json:"authorization_id"`
 			Decision        string `json:"decision"`
@@ -350,6 +435,10 @@ func main() {
 		auth, ok := s.GetAuth(body.AuthorizationID)
 		if !ok {
 			writeJSON(w, 404, map[string]string{"error": "authorization not found"})
+			return
+		}
+		if _, errCode := requireAgentOrg(s, auth.AgentID, orgID); errCode != "" {
+			writeJSON(w, 403, map[string]string{"error": "forbidden"})
 			return
 		}
 		if auth.Decision != policy.RequireApproval {
@@ -388,8 +477,13 @@ func main() {
 			writeJSON(w, 400, map[string]string{"error": "invalid json"})
 			return
 		}
-		agent, ok := s.GetAgent(body.AgentID)
-		if !ok || agent.Status != schemas.AgentStatusActive {
+		orgID, okAuth := bearerOrg(r, s)
+		if !okAuth {
+			writeJSON(w, 401, map[string]string{"error": "unauthorized"})
+			return
+		}
+		agent, errCode := requireAgentOrg(s, body.AgentID, orgID)
+		if errCode != "" || agent.Status != schemas.AgentStatusActive {
 			writeJSON(w, 403, map[string]string{"error": "agent_inactive"})
 			return
 		}
@@ -569,6 +663,9 @@ mux.HandleFunc("GET /v1/receipts/{id}/bundle", func(w http.ResponseWriter, r *ht
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
-	log.Printf("ProofAgent API listening on %s (store=%s)", addr, s.Backend())
+	if demoMode() {
+		log.Printf("WARNING: DEMO_MODE=1 — unauthenticated org_default and demo-keypair enabled")
+	}
+	log.Printf("ProofAgent API listening on %s (store=%s demo=%v)", addr, s.Backend(), demoMode())
 	log.Fatal(http.ListenAndServe(addr, mux))
 }

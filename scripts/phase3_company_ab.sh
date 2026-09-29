@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Phase 3: Company A produces evidence; Company B verifies offline.
+export DEMO_MODE="${DEMO_MODE:-1}"
 set -euo pipefail
 BASE="${PROOFAGENT_URL:-http://localhost:8080}"
 WORKDIR="${TMPDIR:-/tmp}/proofagent_phase3"
