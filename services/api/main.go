@@ -40,7 +40,10 @@ func bearerOrg(r *http.Request, s *store.Memory) (string, bool) {
 	if k := r.Header.Get("X-API-Key"); k != "" {
 		return s.OrgFromAPIKey(k)
 	}
-	// Demo mode: allow missing auth as org_default
+	// STRICT_AUTH=1 requires API key; otherwise demo mode uses org_default
+	if os.Getenv("STRICT_AUTH") == "1" || os.Getenv("STRICT_AUTH") == "true" {
+		return "", false
+	}
 	return "org_default", true
 }
 
@@ -61,6 +64,14 @@ func main() {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(dashboardHTML)
 })
+
+	mux.HandleFunc("GET /v1/version", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]string{
+			"product": "ProofAgent",
+			"version": "0.1.0",
+			"api":     "v1",
+		})
+	})
 
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		storeName := "memory"
@@ -352,9 +363,13 @@ func main() {
 
 	mux.HandleFunc("POST /v1/receipts", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			AgentID, AuthorizationID, InputHash, ResultStatus, ResultHash string
-			Action                                                          map[string]any
-			Receipt                                                         *receipts.Receipt
+			AgentID         string         `json:"agent_id"`
+			AuthorizationID string         `json:"authorization_id"`
+			InputHash       string         `json:"input_hash"`
+			ResultStatus    string         `json:"result_status"`
+			ResultHash      string         `json:"result_hash"`
+			Action          map[string]any `json:"action"`
+			Receipt         *receipts.Receipt `json:"receipt"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, 400, map[string]string{"error": "invalid json"})

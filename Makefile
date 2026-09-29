@@ -17,3 +17,9 @@ docker-up:
 
 docker-down:
 	docker compose down
+
+e2e:
+	./scripts/e2e.sh
+
+release-check: test build
+	@echo "v0.1.0 release check OK"
